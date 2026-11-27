@@ -46,14 +46,14 @@ const chip = (txt, t) => `<span class="chip ${t}">${esc(txt)}</span>`;
 /* ---------- Données ---------- */
 async function chargerTout() {
   const [par, comptes, tiers, imports, cuves, salaries, periodes] = await Promise.all([
-    DB.sel("parametres"), DB.sel("comptes", { order: "numero" }), DB.sel("tiers", { order: "prenom" }),
+    DB.sel("parametres"), DB.sel("comptes", { order: "numero" }), DB.sel("tiers", { order: "nom" }),
     DB.sel("caisse_imports", { order: "date_debut desc" }), DB.sel("cuves", { order: "date desc" }),
     DB.sel("salaries", { order: "prenom" }), DB.sel("periodes_closes"),
   ]);
   S.params = par[0]?.data || {}; S.comptes = comptes; S.tiers = tiers; S.imports = imports; S.cuves = cuves; S.salaries = salaries; S.periodes = periodes;
   S.factures = await DB.sel("factures", { order: "date_facture desc" });
   if (estCompta()) S.reglements = await DB.sel("reglements", { order: "date desc" });
-  if (estGerant()) S.profiles = await DB.sel("profiles", { order: "prenom" });
+  if (estGerant()) S.profiles = await DB.sel("profiles", { order: "nom" });
   S.lignesCache.clear();
 }
 async function lignes(d1, d2) {
@@ -937,7 +937,7 @@ function vUsers(el) {
   el.innerHTML = `<div class="panel"><div class="row"><h2 class="grow">Utilisateurs</h2><button class="primary" id="nu">Créer un compte</button></div>
   <table><thead><tr><th>Nom</th><th>E-mail</th><th>Rôle</th></tr></thead><tbody>${S.profiles.map((p) => `<tr><td>${esc(p.nom)}</td><td>${esc(p.email)}</td><td>${p.id === S.user.id ? R[p.role] : `<select data-u="${p.id}">${Object.entries(R).map(([k, n]) => `<option value="${k}" ${k === p.role ? "selected" : ""}>${n}</option>`).join("")}</select>`}</td></tr>`).join("")}</tbody></table>
   <ul class="small muted"><li><b>Comptable</b> : comptabilité, fournisseurs, caisse, carburant, planning. Ne voit ni les fiches salariés ni la paie.</li><li><b>Caisse</b> : importe les décomptes, dépose les factures en photo, saisit les jauges, consulte le planning. Ne voit pas la comptabilité.</li><li><b>Désactivé</b> : plus aucun accès, à appliquer le jour d'un départ.</li></ul></div>`;
-  $$("[data-u]", el).forEach((s) => (s.onchange = () => action(async () => { await DB.upd("profiles", { id: s.dataset.u }, { role: s.value }); S.profiles = await DB.sel("profiles", { order: "prenom" }); }, "Rôle modifié")));
+  $$("[data-u]", el).forEach((s) => (s.onchange = () => action(async () => { await DB.upd("profiles", { id: s.dataset.u }, { role: s.value }); S.profiles = await DB.sel("profiles", { order: "nom" }); }, "Rôle modifié")));
   $("#nu").onclick = () => {
     const m = modal("Créer un compte", `<form class="form" id="fu"><label>Nom<input name="nom" required></label><label>E-mail<input type="email" name="email" required></label>
       <label>Rôle<select name="role"><option value="caissier">Caisse</option><option value="comptable">Comptable</option><option value="gerant">Gérant</option></select></label></form><div id="ur"></div><div class="row end"><button class="primary" id="uok">Créer</button></div>`);
@@ -948,7 +948,7 @@ function vUsers(el) {
       const { data, error } = await sec.auth.signUp({ email, password: pwd }); if (error) throw new Error(error.message);
       if (!data.user || (data.user.identities && !data.user.identities.length)) throw new Error("Cette adresse a déjà un compte.");
       await DB.ins("profiles", { id: data.user.id, nom: f.nom.value.trim(), email, role: f.role.value }, { upsert: true, onConflict: "id" });
-      S.profiles = await DB.sel("profiles", { order: "prenom" });
+      S.profiles = await DB.sel("profiles", { order: "nom" });
       $("#ur", m).innerHTML = `<p>Compte créé. Transmettez ces informations à ${esc(f.nom.value)} :</p><p class="mono box">Adresse : ${esc(location.origin + location.pathname)}<br>E-mail : ${esc(email)}<br>Mot de passe provisoire : ${esc(pwd)}</p><p class="small muted">Il pourra le changer avec « Mon mot de passe ».</p>`;
       $("#uok", m).remove(); vUsers(el);
     });
@@ -1000,5 +1000,6 @@ window.STATION = { S, demarrer, chargerTout };
 window.addEventListener("DOMContentLoaded", () => {
   if (!window.SUPABASE_URL) { $("#app").innerHTML = `<div class="panel">Configuration Supabase manquante (supabase-config.js).</div>`; return; }
   const client = window.__SB_MOCK__ || supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY, { auth: { persistSession: true, autoRefreshToken: true, storageKey: "station-boulouparis" } });
-  DB.init(client); demarrer();
+  DB.init(client);
+  demarrer().catch((e) => { console.error(e); $("#app").innerHTML = `<div class="login panel"><h1>Impossible de charger les données</h1><p class="bad">${esc(e.message || e)}</p><div class="row"><button class="primary" onclick="location.reload()">Réessayer</button><button id="deco2">Se déconnecter</button></div></div>`; $("#deco2").onclick = async () => { await DB.client.auth.signOut(); location.reload(); }; });
 });
