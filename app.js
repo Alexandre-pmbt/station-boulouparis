@@ -1055,6 +1055,10 @@ function vUsers(el) {
   };
 }
 function motDePasse() { const a = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"; const v = new Uint32Array(12); crypto.getRandomValues(v); return [...v].map((x) => a[x % a.length]).join(""); }
+function nouveauMdp() {
+  const m = modal("Choisissez un nouveau mot de passe", `<form class="form one" id="fn"><label>Nouveau mot de passe (8 caractères minimum)<input type="password" name="p1" minlength="8" required autocomplete="new-password"></label><label>Confirmer<input type="password" name="p2" required autocomplete="new-password"></label></form><div class="row end"><button class="primary" id="nok">Enregistrer</button></div>`);
+  $("#nok", m).onclick = () => action(async () => { const f = $("#fn", m); if (!f.reportValidity()) return; if (f.p1.value !== f.p2.value) throw new Error("Les deux mots de passe diffèrent."); const { error } = await DB.client.auth.updateUser({ password: f.p1.value }); if (error) throw new Error(error.message); m.remove(); history.replaceState(null, "", location.pathname); await demarrer(); }, "Mot de passe enregistré : vous êtes connecté.");
+}
 function changerMdp() {
   const m = modal("Mon mot de passe", `<form class="form one" id="fm"><label>Nouveau mot de passe (8 caractères minimum)<input type="password" name="p1" minlength="8" required autocomplete="new-password"></label><label>Confirmer<input type="password" name="p2" required autocomplete="new-password"></label></form><div class="row end"><button class="primary" id="mok">Changer</button></div>`);
   $("#mok", m).onclick = () => action(async () => { const f = $("#fm", m); if (!f.reportValidity()) return; if (f.p1.value !== f.p2.value) throw new Error("Les deux mots de passe diffèrent."); const { error } = await DB.client.auth.updateUser({ password: f.p1.value }); if (error) throw new Error(error.message); m.remove(); }, "Mot de passe changé");
@@ -1070,7 +1074,13 @@ async function ecranConnexion() {
     <form class="form one" id="fl">${init ? "" : `<label>Votre nom<input name="nom" required></label>`}
     <label>E-mail<input type="email" name="email" required autocomplete="username"></label>
     <label>Mot de passe<input type="password" name="pwd" required minlength="8" autocomplete="${init ? "current-password" : "new-password"}"></label>
-    <button class="primary">${init ? "Se connecter" : "Créer le compte gérant"}</button></form></div>`;
+    <button class="primary">${init ? "Se connecter" : "Créer le compte gérant"}</button></form>
+    ${init ? `<button class="link" id="oubli">Mot de passe oublié ?</button>` : ""}</div>`;
+  if ($("#oubli")) $("#oubli").onclick = () => action(async () => {
+    const email = ($("#fl").email.value || prompt("Votre adresse e-mail :") || "").trim().toLowerCase(); if (!email) return;
+    const { error } = await DB.client.auth.resetPasswordForEmail(email, { redirectTo: location.origin + location.pathname });
+    if (error) throw new Error(/after \d+ seconds|rate/i.test(error.message) ? "Trop de demandes rapprochées : réessayez dans une minute." : error.message);
+  }, "Si ce compte existe, un e-mail de réinitialisation vient d'être envoyé. Ouvrez le lien qu'il contient sur cet appareil.");
   $("#fl").onsubmit = (e) => { e.preventDefault(); action(async () => {
     const f = e.target; const email = f.email.value.trim().toLowerCase(), password = f.pwd.value;
     const nonConfirme = (m) => /not confirmed/i.test(m || "");
@@ -1101,5 +1111,7 @@ window.addEventListener("DOMContentLoaded", () => {
   if (!window.SUPABASE_URL) { $("#app").innerHTML = `<div class="panel">Configuration Supabase manquante (supabase-config.js).</div>`; return; }
   const client = window.__SB_MOCK__ || supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY, { auth: { persistSession: true, autoRefreshToken: true, storageKey: "station-boulouparis" } });
   DB.init(client);
+  // Retour depuis le lien « mot de passe oublié » : choisir un nouveau mot de passe
+  if (client.auth.onAuthStateChange) client.auth.onAuthStateChange((ev) => { if (ev === "PASSWORD_RECOVERY") setTimeout(() => nouveauMdp(), 300); });
   demarrer().catch((e) => { console.error(e); $("#app").innerHTML = `<div class="login panel"><h1>Impossible de charger les données</h1><p class="bad">${esc(e.message || e)}</p><div class="row"><button class="primary" onclick="location.reload()">Réessayer</button><button id="deco2">Se déconnecter</button></div></div>`; $("#deco2").onclick = async () => { await DB.client.auth.signOut(); location.reload(); }; });
 });
