@@ -346,6 +346,98 @@
     }
     return Math.round(total * 100) / 100;
   }
+  /* ---------- Codes du planning de la station (M, APM-7, REPOS, M / CP, 8H HS…) ---------- */
+  const LEGENDE_DEFAUT = { M: "5H-13H", "M-10": "5H-15H", "M-9": "5H-14H", "M-4": "9H-13H", APM: "13H-21H", "APM-7": "14H-21H", "APM-4": "17H-21H" };
+  // notes : signification des mentions après « / » (CP est toujours un congé payé)
+  const NOTES_DEFAUT = { M: { libelle: "Mention M", absence: false }, E: { libelle: "Mention E", absence: false } };
+  function analyserCreneau(txt, legende, notesDef) {
+    const leg = { ...LEGENDE_DEFAUT, ...(legende || {}) }; const notes = { ...NOTES_DEFAUT, ...(notesDef || {}) };
+    const brut = String(txt ?? "").trim();
+    const r = { texte: brut, heures: 0, hs: 0, cp: 0, absence: null, notes: [], type: "vide", douteux: false };
+    if (!brut) return r;
+    let s = norm(brut).replace(/1\s*\/\s*2/g, " DEMI ").replace(/\s+/g, " ").trim();
+    if (/^REPOS$/.test(s)) { r.type = "repos"; return r; }
+    if (/^X$/.test(s)) { r.type = "absent"; return r; }
+    if (/EMABUCHE|^PAS EMBAUCHE|^FIN$/.test(s)) { r.type = "note"; r.notes.push(brut); return r; }
+    s = s.replace(/[-\s]*EMBAUCHE/, "").trim();
+    const parts = s.split("/").map((x) => x.trim()).filter(Boolean);
+    let main = parts[0] || ""; const flags = parts.slice(1);
+    const iCp = main.search(/(DEMI\s*)?\bCP\b/);
+    if (iCp >= 0) { flags.unshift(main.slice(iCp)); main = main.slice(0, iCp).replace(/[-\s]+$/, ""); }
+    const estHS = /\bHS\b|H\s*SUPP?\b|HSUPP/.test(main);
+    const plage = heuresCreneau(main);
+    const code = main.match(/^(APM|M)(?![A-Z])(?:\s*-\s*(\d+))?/) || (estHS ? main.match(/\b(APM|M)\b(?:\s*-\s*(\d+))?/) : null);
+    let plus = 0; for (const x of main.matchAll(/\+\s*(\d+(?:[.,]5)?)/g)) plus += num(x[1]);
+    if (code) {
+      const cle = code[1] + (code[2] ? "-" + code[2] : "");
+      let h = leg[cle] != null ? heuresCreneau(leg[cle]) : code[2] ? +code[2] : heuresCreneau(leg[code[1]]);
+      if (plage) h = plage;
+      if (!plus) { const n = main.slice((code.index || 0) + code[0].length).match(/(\d+(?:[.,]\d+)?)\s*H?\s*(?:HS|H\s*SUPP?)/); if (n) plus = num(n[1]); }
+      if (estHS && !plus) r.hs = h; else { r.heures = h; r.hs = plus; }
+      if (plus > 4) r.douteux = true;
+    } else if (plage) { if (estHS) r.hs = plage; else r.heures = plage; }
+    else if (plus) r.hs = plus;
+    else if (main) { const n = main.match(/^(?:H\s*SUPP?\s*)?(\d+(?:[.,]\d+)?)\s*H?\b/); if (n) { if (estHS) r.hs = num(n[1]); else r.heures = num(n[1]); } else r.douteux = true; }
+    for (const f of flags) {
+      if (/\bCP\b/.test(f)) {
+        const nh = f.match(/(\d+(?:[.,]\d+)?)\s*H/); const demi = /DEMI/.test(f);
+        if (nh) { const x = Math.min(num(nh[1]), r.heures); r.heures -= x; r.cp += x; }
+        else if (demi) { const x = r.heures / 2; r.heures -= x; r.cp += x; }
+        else { r.cp += r.heures; r.heures = 0; r.absence = "CP"; }
+      } else {
+        const c = f.replace(/[^A-Z]/g, ""); if (!c) continue;
+        r.notes.push(c);
+        if (notes[c]?.absence) { r.absence = c; r.heures = 0; }
+      }
+    }
+    r.type = r.absence ? "absence" : r.douteux ? "douteux" : r.heures || r.hs ? "travail" : r.cp ? "absence" : "note";
+    return r;
+  }
+  function colLettre(j) { let s = ""; j++; while (j) { const m = (j - 1) % 26; s = String.fromCharCode(65 + m) + s; j = Math.floor((j - 1) / 26); } return s; }
+  // Lit un planning Excel en blocs (une colonne de dates, puis une colonne par salarié, en-têtes de prénoms répétés)
+  function lirePlanningExcel(rows) {
+    const isD = (v) => /^\d{4}-\d{2}-\d{2}$/.test(String(v));
+    const ncol = Math.max(0, ...rows.map((r) => r.length));
+    const dateCols = [...Array(ncol).keys()].filter((j) => rows.filter((r) => isD(r[j])).length >= 7);
+    if (!dateCols.length) throw new Error("Aucune colonne de dates trouvée dans ce planning.");
+    const vide = (j) => rows.every((r) => r[j] === "" || r[j] == null);
+    const blocs = dateCols.map((dc) => { const cols = []; for (let j = dc + 1; j < ncol && !vide(j) && !dateCols.includes(j); j++) cols.push(j); return { dc, cols }; });
+    const finBlocs = Math.max(...blocs.map((b) => (b.cols.length ? b.cols[b.cols.length - 1] : b.dc)));
+    const estNom = (v) => /^[A-ZÉÈÀ][a-zéèëêïîçôûà]+(?:[- ][A-ZÉ][a-zéèëêïîçôûà]+)?$/.test(String(v ?? "").trim());
+    const map = new Map(); const avert = []; const noms = new Set();
+    for (const b of blocs) {
+      let entete = null;
+      rows.forEach((r, i) => {
+        const nn = b.cols.filter((j) => estNom(r[j]));
+        if (!isD(r[b.dc]) && nn.length >= 2) {
+          entete = {}; const vus = new Set();
+          for (const j of nn) { const n = String(r[j]).trim(); if (vus.has(n)) { avert.push(`Ligne ${i + 1}, colonne ${colLettre(j)} : « ${n} » apparaît deux fois dans l'en-tête, cette colonne est ignorée.`); continue; } vus.add(n); entete[j] = n; noms.add(n); }
+          return;
+        }
+        if (isD(r[b.dc]) && entete) for (const [j, n] of Object.entries(entete)) map.set(n + "|" + r[b.dc], { nom: n, date: r[b.dc], texte: String(r[j] ?? "").trim(), ligne: i + 1, col: colLettre(+j) });
+      });
+    }
+    const legende = {};
+    rows.forEach((r) => { for (let j = finBlocs + 1; j < r.length - 1; j++) { const k = norm(r[j]).replace(/\s+/g, ""); if (/^(M|APM)(-\d+)?$/.test(k) && /\d\s*H?\s*-\s*\d/.test(String(r[j + 1]))) legende[k] = String(r[j + 1]).trim(); } });
+    const cellules = [...map.values()];
+    const dates = cellules.map((c) => c.date).sort();
+    return { cellules, noms: [...noms], legende, avertissements: avert, debut: dates[0], fin: dates[dates.length - 1] };
+  }
+  // Totaux d'heures par salarié à partir des créneaux
+  function totaliserCreneaux(textes, legende, notesDef) {
+    const t = { heures: 0, hs: 0, cpH: 0, cpJ: 0, jours: 0, absences: {}, notes: {}, douteux: [] };
+    for (const [date, txt] of textes) {
+      const a = analyserCreneau(txt, legende, notesDef);
+      t.heures += a.heures; t.hs += a.hs; t.cpH += a.cp;
+      if (a.absence === "CP") t.cpJ += 1; else if (a.cp) t.cpJ += 0.5;
+      if (a.absence && a.absence !== "CP") t.absences[a.absence] = (t.absences[a.absence] || 0) + 1;
+      for (const n of a.notes) if (n !== a.absence) t.notes[n] = (t.notes[n] || 0) + 1;
+      if (a.heures || a.hs) t.jours++;
+      if (a.douteux) t.douteux.push(`${date.slice(8, 10)}/${date.slice(5, 7)} « ${a.texte} »`);
+    }
+    return t;
+  }
+
   function semaineIso(date) {
     const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
     const day = d.getUTCDay() || 7; d.setUTCDate(d.getUTCDate() + 4 - day);
@@ -385,5 +477,6 @@
     lireDecompteEurodata, ecritureCaisse, ecritureFacture, ecritureReglement, ecriturePaie, sens,
     balance, compteResultat, bilan, declarationTgc, ecritureLiquidationTgc, rapprochementCarburant,
     lireHistoriqueFournisseurs, cleFournisseur, exportFEC, heuresCreneau, semaineIso, lundiDeSemaine, joursSemaine,
+    LEGENDE_DEFAUT, NOTES_DEFAUT, analyserCreneau, lirePlanningExcel, totaliserCreneaux,
   };
 })(typeof window !== "undefined" ? window : globalThis);

@@ -46,14 +46,14 @@ const chip = (txt, t) => `<span class="chip ${t}">${esc(txt)}</span>`;
 /* ---------- Données ---------- */
 async function chargerTout() {
   const [par, comptes, tiers, imports, cuves, salaries, periodes] = await Promise.all([
-    DB.sel("parametres"), DB.sel("comptes", { order: "numero" }), DB.sel("tiers", { order: "nom" }),
+    DB.sel("parametres"), DB.sel("comptes", { order: "numero" }), DB.sel("tiers", { order: "prenom" }),
     DB.sel("caisse_imports", { order: "date_debut desc" }), DB.sel("cuves", { order: "date desc" }),
-    DB.sel("salaries", { order: "nom" }), DB.sel("periodes_closes"),
+    DB.sel("salaries", { order: "prenom" }), DB.sel("periodes_closes"),
   ]);
   S.params = par[0]?.data || {}; S.comptes = comptes; S.tiers = tiers; S.imports = imports; S.cuves = cuves; S.salaries = salaries; S.periodes = periodes;
   S.factures = await DB.sel("factures", { order: "date_facture desc" });
   if (estCompta()) S.reglements = await DB.sel("reglements", { order: "date desc" });
-  if (estGerant()) S.profiles = await DB.sel("profiles", { order: "nom" });
+  if (estGerant()) S.profiles = await DB.sel("profiles", { order: "prenom" });
   S.lignesCache.clear();
 }
 async function lignes(d1, d2) {
@@ -587,30 +587,42 @@ function vCarbu(el) {
 function vPerso(el) {
   sousOnglets(el, "perso", [["plan", "Planning"], ["sal", "Salariés", estGerant], ["paie", "Paie du mois", estGerant]], { plan: vPlanning, sal: vSalaries, paie: vPaie });
 }
+const legende = () => ({ ...C.LEGENDE_DEFAUT, ...(S.params.legende_planning || {}) });
+const notesDef = () => ({ ...C.NOTES_DEFAUT, ...(S.params.notes_planning || {}) });
+const fh = (h) => (h ? (Math.round(h * 100) / 100).toString().replace(".", ",") : "");
 async function vPlanning(el) {
   if (!S.semaine) S.semaine = C.semaineIso(new Date());
   const sem = S.semaine; const jours = C.joursSemaine(sem);
   const pl = (await DB.sel("plannings", { eq: { semaine: sem } }))[0]?.data || {};
-  const actifs = S.salaries.filter((s) => s.actif);
+  const presents = new Set(Object.keys(pl));
+  const liste = S.salaries.filter((s) => s.actif || presents.has(s.id));
   const ro = !estCompta();
   const NJ = ["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"];
-  el.innerHTML = `<div class="panel planning"><div class="row"><button id="sp">◀</button><h2 class="grow center">Semaine ${sem.slice(6)} · du ${fd(jours[0])} au ${fd(jours[6])}</h2><button id="sn">▶</button>
-    ${ro ? "" : `<button id="pcopy">Copier la semaine précédente</button><button class="primary" id="psave">Enregistrer</button>`}<button id="pprint">Imprimer</button></div>
-    <p class="small muted noprint">Saisissez les horaires sous la forme « 6-14 » ou « 6h-11h 15h-19h30 ». Laissez vide pour un jour de repos.</p>
-    <div class="tbl-wrap"><table><thead><tr><th>Salarié</th>${jours.map((j, i) => `<th>${NJ[i]} ${j.slice(8)}/${j.slice(5, 7)}</th>`).join("")}<th class="num">Heures</th></tr></thead><tbody>
-    ${actifs.map((s) => `<tr data-s="${s.id}"><td>${esc(s.prenom || "")} ${esc(s.nom)}<div class="small muted">${esc(s.poste || "")}</div></td>${jours.map((j) => `<td><input class="pc" data-j="${j}" value="${esc(pl[s.id]?.[j] || "")}" ${ro ? "readonly" : ""} size="9"></td>`).join("")}<td class="num ht"></td></tr>`).join("") || `<tr><td colspan="9" class="muted">Aucun salarié actif (onglet Salariés).</td></tr>`}
-    </tbody><tfoot><tr class="total"><td>Total</td>${jours.map((j) => `<td class="num" data-tj="${j}"></td>`).join("")}<td class="num" id="ptot"></td></tr></tfoot></table></div></div>`;
+  const leg = legende();
+  el.innerHTML = `<div class="panel planning"><div class="row"><button id="sp" aria-label="Semaine précédente">◀</button><h2 class="grow center">Semaine ${sem.slice(6)} · du ${fd(jours[0])} au ${fd(jours[6])}</h2><button id="sn" aria-label="Semaine suivante">▶</button>
+    <input type="date" id="sgo" title="Aller à une date" class="noprint">
+    ${ro ? "" : `<button id="pcopy">Copier la semaine précédente</button><label class="btn">Importer un planning Excel<input type="file" id="pimp" accept=".xlsx,.xls" hidden></label><button class="primary" id="psave">Enregistrer</button>`}<button id="pprint">Imprimer</button></div>
+    <p class="small muted noprint">Codes : ${Object.entries(leg).map(([k, v]) => `<b>${esc(k)}</b> ${esc(v)}`).join(" · ")} · <b>REPOS</b>. Ajouts possibles : « / CP », « + 2H », « 8H HS », ou un horaire libre « 6-14 ».</p>
+    <div class="tbl-wrap"><table><thead><tr><th>Salarié</th>${jours.map((j, i) => `<th>${NJ[i]} ${j.slice(8)}/${j.slice(5, 7)}</th>`).join("")}<th class="num">Heures</th><th class="num">HS</th></tr></thead><tbody>
+    ${liste.map((s) => `<tr data-s="${s.id}"><td>${esc(s.prenom || "")} ${esc(s.nom)}<div class="small muted">${esc(s.poste || "")}</div></td>${jours.map((j) => `<td><input class="pc" data-j="${j}" value="${esc(pl[s.id]?.[j] || "")}" ${ro ? "readonly" : ""} size="9"></td>`).join("")}<td class="num ht"></td><td class="num hs"></td></tr>`).join("") || `<tr><td colspan="10" class="muted">Aucun salarié actif : ajoutez-les dans l'onglet Salariés, ou importez votre planning Excel.</td></tr>`}
+    </tbody><tfoot><tr class="total"><td>Total</td>${jours.map((j) => `<td class="num" data-tj="${j}"></td>`).join("")}<td class="num" id="ptot"></td><td class="num" id="phs"></td></tr></tfoot></table></div></div>`;
   const calc = () => {
-    let tot = 0; const tj = {};
-    $$("tr[data-s]", el).forEach((tr) => { let h = 0; $$(".pc", tr).forEach((i) => { const x = C.heuresCreneau(i.value); h += x; tj[i.dataset.j] = (tj[i.dataset.j] || 0) + x; i.classList.toggle("err", !!i.value.trim() && !x); }); $(".ht", tr).textContent = h ? h.toFixed(2).replace(".", ",") : ""; tot += h; });
-    $$("[data-tj]", el).forEach((td) => (td.textContent = tj[td.dataset.tj] ? tj[td.dataset.tj].toFixed(1).replace(".", ",") : ""));
-    $("#ptot").textContent = tot.toFixed(2).replace(".", ",");
+    let tot = 0, ths = 0; const tj = {};
+    $$("tr[data-s]", el).forEach((tr) => {
+      let h = 0, hs = 0;
+      $$(".pc", tr).forEach((i) => { const a = C.analyserCreneau(i.value, leg, notesDef()); h += a.heures; hs += a.hs; tj[i.dataset.j] = (tj[i.dataset.j] || 0) + a.heures + a.hs; i.dataset.t = a.type; i.title = a.type === "douteux" ? "Code à vérifier" : a.heures || a.hs || a.cp ? `${fh(a.heures)} h${a.hs ? " + " + fh(a.hs) + " h sup." : ""}${a.cp ? " · CP " + fh(a.cp) + " h" : ""}` : ""; });
+      $(".ht", tr).textContent = fh(h); $(".hs", tr).textContent = fh(hs); tot += h; ths += hs;
+    });
+    $$("[data-tj]", el).forEach((td) => (td.textContent = fh(tj[td.dataset.tj])));
+    $("#ptot").textContent = fh(tot); $("#phs").textContent = fh(ths);
   };
   $$(".pc", el).forEach((i) => (i.oninput = calc)); calc();
-  const decal = (n) => { const l = C.lundiDeSemaine(sem); l.setUTCDate(l.getUTCDate() + 7 * n); S.semaine = C.semaineIso(new Date(l.getUTCFullYear(), l.getUTCMonth(), l.getUTCDate())); vPlanning(el); };
+  const versSemaine = (d) => { S.semaine = C.semaineIso(d); vPlanning(el); };
+  const decal = (n) => { const l = C.lundiDeSemaine(sem); l.setUTCDate(l.getUTCDate() + 7 * n); versSemaine(new Date(l.getUTCFullYear(), l.getUTCMonth(), l.getUTCDate())); };
   $("#sp").onclick = () => decal(-1); $("#sn").onclick = () => decal(1);
+  $("#sgo").onchange = (e) => { if (e.target.value) { const [y, m, d] = e.target.value.split("-").map(Number); versSemaine(new Date(y, m - 1, d)); } };
   $("#pprint").onclick = () => window.print();
-  const lire = () => { const d = {}; $$("tr[data-s]", el).forEach((tr) => { const o = {}; $$(".pc", tr).forEach((i) => { if (i.value.trim()) o[i.dataset.j] = i.value.trim(); }); if (Object.keys(o).length) d[tr.dataset.s] = o; }); return d; };
+  const lire = () => { const d = { ...pl }; $$("tr[data-s]", el).forEach((tr) => { const o = {}; $$(".pc", tr).forEach((i) => { if (i.value.trim()) o[i.dataset.j] = i.value.trim(); }); if (Object.keys(o).length) d[tr.dataset.s] = o; else delete d[tr.dataset.s]; }); return d; };
   if (!ro) {
     $("#psave").onclick = () => action(() => DB.ins("plannings", { semaine: sem, data: lire(), maj_le: new Date().toISOString() }, { upsert: true, onConflict: "semaine" }), "Planning enregistré");
     $("#pcopy").onclick = async () => {
@@ -618,16 +630,55 @@ async function vPlanning(el) {
       const p = (await DB.sel("plannings", { eq: { semaine: prev } }))[0]?.data || {}; const pj = C.joursSemaine(prev);
       $$("tr[data-s]", el).forEach((tr) => $$(".pc", tr).forEach((i, k) => { i.value = p[tr.dataset.s]?.[pj[k]] || ""; })); calc(); toast("Semaine précédente copiée : pensez à enregistrer.");
     };
+    $("#pimp").onchange = (e) => { const f = e.target.files[0]; if (f) importerPlanning(f, () => vPlanning(el)); e.target.value = ""; };
   }
+}
+async function importerPlanning(file, apres) {
+  const r = await action(async () => { const wb = await lireXlsx(file); const ws = wb.Sheets[wb.SheetNames.find((n) => /PLANNING/i.test(n)) || wb.SheetNames[0]]; return C.lirePlanningExcel(C.lireFeuille(XLSX, ws)); });
+  if (!r) return;
+  const cle = (x) => C.norm(x).replace(/[^A-Z]/g, "");
+  const trouver = (nom) => S.salaries.find((s) => cle(s.prenom) === cle(nom) || cle(s.nom) === cle(nom) || cle((s.prenom || "") + (s.nom || "")) === cle(nom));
+  const inconnus = r.noms.filter((n) => !trouver(n));
+  const douteux = r.cellules.map((c) => ({ c, a: C.analyserCreneau(c.texte, { ...legende(), ...r.legende }, notesDef()) })).filter((x) => x.a.douteux);
+  const notes = {}; r.cellules.forEach((c) => C.analyserCreneau(c.texte, { ...legende(), ...r.legende }, notesDef()).notes.forEach((n) => { if (n.length <= 3) notes[n] = (notes[n] || 0) + 1; }));
+  const m = modal("Importer le planning Excel", `
+    <div class="kpis">${kpi("Période", `${fd(r.debut)} → ${fd(r.fin)}`, "")}${kpi("Salariés", r.noms.length, r.noms.join(", "))}${kpi("Créneaux lus", fmt(r.cellules.filter((c) => c.texte).length), "")}</div>
+    ${Object.keys(r.legende).length ? `<p class="small">Horaires repris de la légende du fichier : ${Object.entries(r.legende).map(([k, v]) => `<b>${esc(k)}</b> ${esc(v)}`).join(" · ")}.</p>` : ""}
+    ${inconnus.length ? `<div class="box"><b>${inconnus.length} prénom(s) sans fiche salarié :</b> ${inconnus.map(esc).join(", ")}.<br>${estGerant() ? `<label><input type="checkbox" id="pcre" checked> Créer leur fiche (prénom seulement ; complétez ensuite contrat et taux horaire)</label>` : `<span class="muted">Demandez au gérant de les créer, sinon leurs créneaux ne seront pas importés.</span>`}</div>` : ""}
+    ${Object.keys(notes).length ? `<p class="small">Mentions trouvées après « / » : ${Object.entries(notes).map(([k, v]) => `<b>${esc(k)}</b> (${v} fois)`).join(", ")}. Leur signification se règle dans Paramètres, puis Codes du planning.</p>` : ""}
+    ${r.avertissements.length ? `<ul class="alerts">${r.avertissements.map((a) => `<li>${esc(a)}</li>`).join("")}</ul>` : ""}
+    ${douteux.length ? `<details><summary>${douteux.length} créneau(x) à vérifier (importés tels quels, comptés sous réserve)</summary><ul class="small">${douteux.slice(0, 80).map((x) => `<li>${esc(x.c.nom)} · ${fd(x.c.date)} · « ${esc(x.c.texte)} »</li>`).join("")}</ul></details>` : ""}
+    <p class="small muted">Pour chaque salarié du fichier, les jours de la période importée remplacent ce qui était déjà saisi. Les autres semaines ne bougent pas.</p>
+    <div class="row end"><button class="primary" id="piok">Importer</button></div>`, { large: true });
+  $("#piok", m).onclick = () => action(async () => {
+    $("#piok", m).disabled = true; $("#piok", m).textContent = "Import en cours…";
+    if (inconnus.length && $("#pcre", m)?.checked) { const recent = addDays(r.fin < today() ? r.fin : today(), -45);
+      await DB.ins("salaries", inconnus.map((n) => ({ nom: "", prenom: n, poste: "", actif: r.cellules.some((c) => c.nom === n && c.texte && c.date >= recent && !/^REPOS$|^X$/i.test(c.texte)) }))); S.salaries = await DB.sel("salaries", { order: "prenom" }); }
+    if (Object.keys(r.legende).length) await enregParams({ ...S.params, legende_planning: { ...(S.params.legende_planning || {}), ...r.legende } });
+    const parSem = new Map(); const datesFichier = new Set(r.cellules.map((c) => c.date));
+    for (const c of r.cellules) { const s = trouver(c.nom); if (!s) continue; const k = C.semaineIso(new Date(+c.date.slice(0, 4), +c.date.slice(5, 7) - 1, +c.date.slice(8, 10))); if (!parSem.has(k)) parSem.set(k, []); parSem.get(k).push({ sid: s.id, ...c }); }
+    const exist = Object.fromEntries((await DB.sel("plannings", { in: { semaine: [...parSem.keys()] } })).map((p) => [p.semaine, p.data]));
+    const rows = [...parSem.entries()].map(([sem, cs]) => {
+      const d = JSON.parse(JSON.stringify(exist[sem] || {}));
+      const sids = new Set(cs.map((c) => c.sid));
+      for (const sid of sids) { const o = d[sid] || {}; for (const j of Object.keys(o)) if (datesFichier.has(j)) delete o[j]; d[sid] = o; }
+      for (const c of cs) if (c.texte) d[c.sid][c.date] = c.texte;
+      for (const sid of Object.keys(d)) if (!Object.keys(d[sid]).length) delete d[sid];
+      return { semaine: sem, data: d, maj_le: new Date().toISOString() };
+    });
+    await DB.ins("plannings", rows, { upsert: true, onConflict: "semaine" });
+    m.remove(); toast(`Planning importé : ${rows.length} semaine(s).`); apres();
+  });
 }
 async function heuresDuMois(m) {
   // Toutes les semaines qui touchent le mois
   const d1 = new Date(+m.slice(0, 4), +m.slice(5, 7) - 1, 1); const sems = new Set();
   for (let d = new Date(d1); d.getMonth() === d1.getMonth(); d.setDate(d.getDate() + 1)) sems.add(C.semaineIso(d));
   const pls = await DB.sel("plannings", { in: { semaine: [...sems] } });
-  const h = {};
-  for (const p of pls) for (const [sid, jours] of Object.entries(p.data)) for (const [j, v] of Object.entries(jours)) if (j.slice(0, 7) === m) h[sid] = (h[sid] || 0) + C.heuresCreneau(v);
-  return h;
+  const par = {};
+  for (const p of pls) for (const [sid, jours] of Object.entries(p.data)) for (const [j, v] of Object.entries(jours)) if (j.slice(0, 7) === m) (par[sid] = par[sid] || []).push([j, v]);
+  const out = {}; for (const [sid, l] of Object.entries(par)) out[sid] = C.totaliserCreneaux(l.sort(), legende(), notesDef());
+  return out;
 }
 async function vSalaries(el) {
   const priv = Object.fromEntries((await DB.sel("salaries_prive")).map((p) => [p.id, p.data]));
@@ -650,7 +701,7 @@ async function vSalaries(el) {
       const base = { nom: f.nom.value.trim().toUpperCase(), prenom: f.prenom.value.trim(), poste: f.poste.value.trim(), actif: f.actif.value === "1" };
       const r = n ? await DB.ins("salaries", base) : await DB.upd("salaries", { id: s.id }, base);
       await DB.ins("salaries_prive", { id: r.id, data: { contrat: f.contrat.value, entree: f.entree.value || null, sortie: f.sortie.value || null, taux_horaire: C.num(f.taux_horaire.value), heures_mois: C.num(f.heures_mois.value), cafat: f.cafat.value.trim() } }, { upsert: true, onConflict: "id" });
-      S.salaries = await DB.sel("salaries", { order: "nom" }); m.remove(); vSalaries(el);
+      S.salaries = await DB.sel("salaries", { order: "prenom" }); m.remove(); vSalaries(el);
     }, "Salarié enregistré");
   };
   $("#ns").onclick = () => ouvrir(null);
@@ -661,13 +712,16 @@ async function vPaie(el) {
   const priv = Object.fromEntries((await DB.sel("salaries_prive")).map((p) => [p.id, p.data]));
   const paie = (await DB.sel("paies", { eq: { mois: m } }))[0] || { mois: m, data: {} };
   const d = paie.data; const actifs = S.salaries.filter((s) => s.actif || h[s.id]);
-  const brutEstime = actifs.reduce((s, x) => s + (h[x.id] || 0) * (priv[x.id]?.taux_horaire || 0), 0);
+  const nd = notesDef();
+  const brutEstime = actifs.reduce((s, x) => s + ((h[x.id]?.heures || 0) + (h[x.id]?.hs || 0) + (h[x.id]?.cpH || 0)) * (priv[x.id]?.taux_horaire || 0), 0);
   const champs = [["brut", "Salaires bruts"], ["sal_cafat", "Cotisations salariales CAFAT"], ["sal_autres", "Cotisations salariales retraite / prévoyance"], ["pat_cafat", "Cotisations patronales CAFAT"], ["pat_autres", "Cotisations patronales retraite / prévoyance"], ["acomptes", "Acomptes versés dans le mois"]];
   el.innerHTML = `<div class="split">
-    <div class="panel"><h2>Heures du planning · ${C.moisFr(m)}</h2><div class="tbl-wrap"><table><thead><tr><th>Salarié</th><th class="num">Heures planifiées</th><th class="num">Contrat</th><th class="num">Écart</th><th class="num">Brut estimé</th></tr></thead><tbody>
-      ${actifs.map((s) => { const p = priv[s.id] || {}; const hh = h[s.id] || 0; const e = hh - (p.heures_mois || 0); return `<tr><td>${esc(s.prenom || "")} ${esc(s.nom)}</td><td class="num">${hh.toFixed(2).replace(".", ",")}</td><td class="num">${fmt(p.heures_mois)}</td><td class="num">${p.heures_mois ? chip((e > 0 ? "+" : "") + e.toFixed(1).replace(".", ","), Math.abs(e) > 1 ? "warn" : "ok") : ""}</td><td class="num">${fmt(hh * (p.taux_horaire || 0))}</td></tr>`; }).join("")}
-      </tbody><tfoot><tr class="total"><td>Total</td><td class="num">${Object.values(h).reduce((a, b) => a + b, 0).toFixed(2).replace(".", ",")}</td><td></td><td></td><td class="num">${fmt(brutEstime)}</td></tr></tfoot></table></div>
-      <p class="small muted">Le brut estimé = heures planifiées × taux horaire, hors primes, majorations et absences. Les bulletins restent à établir à partir de ces heures.</p></div>
+    <div class="panel"><h2>Heures du planning · ${C.moisFr(m)}</h2><div class="tbl-wrap"><table><thead><tr><th>Salarié</th><th class="num">Jours</th><th class="num">Heures</th><th class="num">H. sup.</th><th class="num">CP (j)</th><th>Absences et mentions</th><th class="num">Contrat</th><th class="num">Brut estimé</th></tr></thead><tbody>
+      ${actifs.map((s) => { const p = priv[s.id] || {}; const t = h[s.id] || { heures: 0, hs: 0, cpH: 0, cpJ: 0, jours: 0, absences: {}, notes: {}, douteux: [] };
+        const ment = [...Object.entries(t.absences).map(([k, v]) => `${esc(nd[k]?.libelle || k)} ${v} j`), ...Object.entries(t.notes).map(([k, v]) => `${esc(nd[k]?.libelle || k)} ×${v}`)].join(", ");
+        return `<tr><td>${esc(s.prenom || "")} ${esc(s.nom)}</td><td class="num">${t.jours}</td><td class="num">${fh(t.heures)}</td><td class="num">${fh(t.hs)}</td><td class="num">${fh(t.cpJ)}</td><td class="small">${ment}${t.douteux.length ? " " + chip(t.douteux.length + " à vérifier", "warn") + `<div class="muted">${esc(t.douteux.join(", "))}</div>` : ""}</td><td class="num">${fmt(p.heures_mois)}</td><td class="num">${fmt((t.heures + t.hs + t.cpH) * (p.taux_horaire || 0))}</td></tr>`; }).join("")}
+      </tbody><tfoot><tr class="total"><td>Total</td><td></td><td class="num">${fh(Object.values(h).reduce((a, t) => a + t.heures, 0))}</td><td class="num">${fh(Object.values(h).reduce((a, t) => a + t.hs, 0))}</td><td class="num">${fh(Object.values(h).reduce((a, t) => a + t.cpJ, 0))}</td><td></td><td></td><td class="num">${fmt(brutEstime)}</td></tr></tfoot></table></div>
+      <p class="small muted">Brut estimé = (heures + heures supplémentaires + heures de CP) × taux horaire, sans majoration des heures supplémentaires, primes ni retenues. Les bulletins restent à établir à partir de ces heures.</p></div>
     <div class="panel"><h2>Écriture de paie</h2><p class="small muted">Reportez les totaux du livre de paie du mois.</p>
       <form class="form one" id="fp">${champs.map(([k, n]) => `<label>${n}<input type="number" name="${k}" value="${d[k] ?? ""}" ${paie.ecriture_id ? "disabled" : ""}></label>`).join("")}</form>
       <div id="pe"></div>
@@ -836,7 +890,23 @@ function telecharger(nom, txt) {
 /* =====================================================================
    PARAMÈTRES ET UTILISATEURS
    ===================================================================== */
-function vParam(el) { sousOnglets(el, "param", [["soc", "Société"], ["map", "Catégories et modes"], ["users", "Utilisateurs"]], { soc: vSociete, map: vMapping, users: vUsers }); }
+function vParam(el) { sousOnglets(el, "param", [["soc", "Société"], ["map", "Catégories et modes"], ["codes", "Codes du planning"], ["users", "Utilisateurs"]], { soc: vSociete, map: vMapping, codes: vCodesPlanning, users: vUsers }); }
+function vCodesPlanning(el) {
+  const leg = legende(), nd = notesDef();
+  el.innerHTML = `<div class="split"><div class="panel"><h2>Horaires des codes</h2><p class="small muted">Un code « M-n » ou « APM-n » absent de la liste compte pour n heures.</p>
+    <table id="tl"><thead><tr><th>Code</th><th>Horaire</th><th class="num">Heures</th><th></th></tr></thead><tbody>${Object.entries(leg).map(([k, v]) => `<tr><td><input class="k mono" value="${esc(k)}" size="7"></td><td><input class="v" value="${esc(v)}" size="10"></td><td class="num">${fh(C.heuresCreneau(v))}</td><td><button class="link danger x">×</button></td></tr>`).join("")}</tbody></table><button id="tla">Ajouter un code</button></div>
+    <div class="panel"><h2>Mentions après « / »</h2><p class="small muted">« CP » est toujours un congé payé. Indiquez ce que veulent dire les autres mentions, par exemple « M » pour maladie. Une mention qui est une absence ne compte pas d'heures travaillées.</p>
+    <table id="tn"><thead><tr><th>Mention</th><th>Signification</th><th>Absence</th><th></th></tr></thead><tbody>${Object.entries(nd).map(([k, v]) => `<tr><td><input class="k mono" value="${esc(k)}" size="4"></td><td><input class="v" value="${esc(v.libelle)}"></td><td><input type="checkbox" class="a" ${v.absence ? "checked" : ""}></td><td><button class="link danger x">×</button></td></tr>`).join("")}</tbody></table><button id="tna">Ajouter une mention</button></div></div>
+    <div class="row end"><button class="primary" id="cok">Enregistrer</button></div>`;
+  const lier = () => $$(".x", el).forEach((b) => (b.onclick = () => b.closest("tr").remove())); lier();
+  $("#tla").onclick = () => { const tr = document.createElement("tr"); tr.innerHTML = `<td><input class="k mono" size="7"></td><td><input class="v" size="10" placeholder="5H-13H"></td><td></td><td><button class="link danger x">×</button></td>`; $("#tl tbody").appendChild(tr); lier(); };
+  $("#tna").onclick = () => { const tr = document.createElement("tr"); tr.innerHTML = `<td><input class="k mono" size="4"></td><td><input class="v"></td><td><input type="checkbox" class="a"></td><td><button class="link danger x">×</button></td>`; $("#tn tbody").appendChild(tr); lier(); };
+  $("#cok").onclick = () => action(async () => {
+    const l = {}; for (const tr of $$("#tl tbody tr")) { const k = C.norm($(".k", tr).value).replace(/\s+/g, ""), v = $(".v", tr).value.trim(); if (!k) continue; if (!C.heuresCreneau(v)) throw new Error(`Horaire illisible pour ${k} : écrivez par exemple 5H-13H.`); l[k] = v; }
+    const n = {}; for (const tr of $$("#tn tbody tr")) { const k = C.norm($(".k", tr).value).replace(/[^A-Z]/g, ""); if (k && k !== "CP") n[k] = { libelle: $(".v", tr).value.trim() || k, absence: $(".a", tr).checked }; }
+    await enregParams({ ...S.params, legende_planning: l, notes_planning: n }); vCodesPlanning(el);
+  }, "Codes enregistrés");
+}
 async function enregParams(p) { await DB.ins("parametres", { id: 1, data: p }, { upsert: true, onConflict: "id" }); S.params = p; }
 function vSociete(el) {
   const p = S.params;
@@ -867,7 +937,7 @@ function vUsers(el) {
   el.innerHTML = `<div class="panel"><div class="row"><h2 class="grow">Utilisateurs</h2><button class="primary" id="nu">Créer un compte</button></div>
   <table><thead><tr><th>Nom</th><th>E-mail</th><th>Rôle</th></tr></thead><tbody>${S.profiles.map((p) => `<tr><td>${esc(p.nom)}</td><td>${esc(p.email)}</td><td>${p.id === S.user.id ? R[p.role] : `<select data-u="${p.id}">${Object.entries(R).map(([k, n]) => `<option value="${k}" ${k === p.role ? "selected" : ""}>${n}</option>`).join("")}</select>`}</td></tr>`).join("")}</tbody></table>
   <ul class="small muted"><li><b>Comptable</b> : comptabilité, fournisseurs, caisse, carburant, planning. Ne voit ni les fiches salariés ni la paie.</li><li><b>Caisse</b> : importe les décomptes, dépose les factures en photo, saisit les jauges, consulte le planning. Ne voit pas la comptabilité.</li><li><b>Désactivé</b> : plus aucun accès, à appliquer le jour d'un départ.</li></ul></div>`;
-  $$("[data-u]", el).forEach((s) => (s.onchange = () => action(async () => { await DB.upd("profiles", { id: s.dataset.u }, { role: s.value }); S.profiles = await DB.sel("profiles", { order: "nom" }); }, "Rôle modifié")));
+  $$("[data-u]", el).forEach((s) => (s.onchange = () => action(async () => { await DB.upd("profiles", { id: s.dataset.u }, { role: s.value }); S.profiles = await DB.sel("profiles", { order: "prenom" }); }, "Rôle modifié")));
   $("#nu").onclick = () => {
     const m = modal("Créer un compte", `<form class="form" id="fu"><label>Nom<input name="nom" required></label><label>E-mail<input type="email" name="email" required></label>
       <label>Rôle<select name="role"><option value="caissier">Caisse</option><option value="comptable">Comptable</option><option value="gerant">Gérant</option></select></label></form><div id="ur"></div><div class="row end"><button class="primary" id="uok">Créer</button></div>`);
@@ -878,7 +948,7 @@ function vUsers(el) {
       const { data, error } = await sec.auth.signUp({ email, password: pwd }); if (error) throw new Error(error.message);
       if (!data.user || (data.user.identities && !data.user.identities.length)) throw new Error("Cette adresse a déjà un compte.");
       await DB.ins("profiles", { id: data.user.id, nom: f.nom.value.trim(), email, role: f.role.value }, { upsert: true, onConflict: "id" });
-      S.profiles = await DB.sel("profiles", { order: "nom" });
+      S.profiles = await DB.sel("profiles", { order: "prenom" });
       $("#ur", m).innerHTML = `<p>Compte créé. Transmettez ces informations à ${esc(f.nom.value)} :</p><p class="mono box">Adresse : ${esc(location.origin + location.pathname)}<br>E-mail : ${esc(email)}<br>Mot de passe provisoire : ${esc(pwd)}</p><p class="small muted">Il pourra le changer avec « Mon mot de passe ».</p>`;
       $("#uok", m).remove(); vUsers(el);
     });
