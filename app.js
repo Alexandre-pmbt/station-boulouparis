@@ -903,11 +903,13 @@ async function ecranConnexion() {
     <button class="primary">${init ? "Se connecter" : "Créer le compte gérant"}</button></form></div>`;
   $("#fl").onsubmit = (e) => { e.preventDefault(); action(async () => {
     const f = e.target; const email = f.email.value.trim().toLowerCase(), password = f.pwd.value;
-    if (init) { const { error } = await DB.client.auth.signInWithPassword({ email, password }); if (error) throw new Error(/Invalid/.test(error.message) ? "E-mail ou mot de passe incorrect." : error.message); }
+    const nonConfirme = (m) => /not confirmed/i.test(m || "");
+    const MSG_CONF = "Adresse e-mail pas encore confirmée : cliquez sur le lien reçu par e-mail de Supabase (même si la page qui s'ouvre affiche une erreur), puis reconnectez-vous ici. Le gérant peut aussi désactiver « Confirm email » dans Supabase.";
+    if (init) { const { error } = await DB.client.auth.signInWithPassword({ email, password }); if (error) throw new Error(nonConfirme(error.message) ? MSG_CONF : /Invalid/.test(error.message) ? "E-mail ou mot de passe incorrect." : error.message); }
     else {
-      let { error } = await DB.client.auth.signUp({ email, password });
-      if (error && /already registered/i.test(error.message)) ({ error } = await DB.client.auth.signInWithPassword({ email, password }));
-      if (error) throw new Error(error.message);
+      let { data: su, error } = await DB.client.auth.signUp({ email, password });
+      if ((error && /already registered/i.test(error.message)) || (!error && !su?.session)) ({ error } = await DB.client.auth.signInWithPassword({ email, password }));
+      if (error) throw new Error(nonConfirme(error.message) ? MSG_CONF : /Invalid/.test(error.message) ? "Ce compte existe déjà avec un autre mot de passe." : error.message);
       const ok = await DB.rpc("premier_gerant", { p_nom: f.nom.value.trim() }); if (!ok) throw new Error("Un gérant existe déjà : connectez-vous.");
     }
     await demarrer();
