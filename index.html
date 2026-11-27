@@ -87,6 +87,12 @@ details.grp summary .num{margin-left:auto}details.grp table{margin-top:6px}
 #toasts{position:fixed;bottom:16px;right:16px;display:flex;flex-direction:column;gap:8px;z-index:60;max-width:min(420px,90vw)}
 .toast{background:var(--ink);color:var(--surface);padding:10px 14px;border-radius:8px;font-size:13px;box-shadow:0 8px 20px rgba(0,0,0,.2)}
 .toast.bad{background:var(--bad);color:#fff}.toast.warn{background:var(--warn);color:#fff}
+.saisie{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.1fr);gap:16px;align-items:start}
+.apercu{position:sticky;top:0;border:1px solid var(--line);border-radius:6px;background:var(--soft);min-height:420px;max-height:78vh;overflow:auto;display:flex;align-items:flex-start;justify-content:center}
+.apercu img{max-width:100%;display:block}.apercu iframe{width:100%;height:76vh;border:0}
+.saisie-form{display:flex;flex-direction:column;gap:12px;min-width:0}
+@media (max-width:900px){.saisie{grid-template-columns:1fr}.apercu{position:static;min-height:240px;max-height:50vh}}
+.modal.large{width:min(1240px,100%)}
 .login{max-width:420px;margin:10vh auto}.login h1{margin:0;font-size:20px}
 .planning td input{min-width:84px;font-family:var(--f-num);font-size:12.5px}
 .planning input[data-t="repos"]{background:var(--soft);color:var(--muted)}
@@ -101,6 +107,7 @@ details.grp summary .num{margin-left:auto}details.grp table{margin-top:6px}
 <div id="toasts" aria-live="polite"></div>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script src="supabase-config.js"></script>
 <script src="compta.js"></script>
 <script src="db.js"></script>

@@ -28,7 +28,8 @@ Aucune donnée n'est stockée dans ce dépôt.
 |---|---|
 | Gérant | Tout, y compris les salariés, la paie, les utilisateurs et la réouverture d'un mois clôturé. |
 | Comptable | Comptabilité, fournisseurs, caisse, carburant, planning. Ne voit ni les fiches salariés ni la paie. |
-| Caisse | Importe les décomptes, dépose les factures en photo (elles restent « à valider »), saisit les jauges, consulte le planning. |
+| Caisse | Importe les décomptes, dépose les factures en photo (elles attendent la saisie), saisit les jauges, consulte le planning. |
+| Expert-comptable | Lecture seule : comptabilité, exports et toutes les pièces (onglet Documents, téléchargement ZIP par mois). Ne voit ni les salariés ni le planning. |
 | Désactivé | Rien. À appliquer le jour d'un départ. |
 
 ## Comptes utilisés automatiquement
@@ -41,4 +42,4 @@ Aucune donnée n'est stockée dans ce dépôt.
 
 ## Fichiers
 
-`index.html` (mise en page), `app.js` (écrans), `compta.js` (moteur comptable et lecture des fichiers EURODATA), `db.js` (accès à Supabase), `supabase-config.js` (adresse du projet, sans secret), `supabase/schema.sql` (base et sécurité).
+`index.html` (mise en page), `app.js` (écrans), `compta.js` (moteur comptable et lecture des fichiers EURODATA), `db.js` (accès à Supabase), `supabase-config.js` (adresse du projet, sans secret), `supabase/schema.sql` (base et sécurité), puis `supabase/migration_02_expert_documents.sql` (rôle expert-comptable, factures déposées, documents).

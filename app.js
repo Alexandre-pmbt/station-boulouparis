@@ -19,6 +19,8 @@ const S = {
   lignesCache: new Map(),
 };
 const estCompta = () => ["gerant", "comptable"].includes(S.role);
+const estLecteur = () => ["gerant", "comptable", "expert"].includes(S.role);
+const estExploitation = () => ["gerant", "comptable", "caissier"].includes(S.role);
 const estGerant = () => S.role === "gerant";
 const tiersPar = (id) => S.tiers.find((t) => t.id === id);
 const libCompte = (n) => (S.comptes.find((c) => c.numero === n) || {}).libelle || "";
@@ -48,11 +50,12 @@ async function chargerTout() {
   const [par, comptes, tiers, imports, cuves, salaries, periodes] = await Promise.all([
     DB.sel("parametres"), DB.sel("comptes", { order: "numero" }), DB.sel("tiers", { order: "nom" }),
     DB.sel("caisse_imports", { order: "date_debut desc" }), DB.sel("cuves", { order: "date desc" }),
-    DB.sel("salaries", { order: "prenom" }), DB.sel("periodes_closes"),
+    estExploitation() ? DB.sel("salaries", { order: "prenom" }) : [], DB.sel("periodes_closes"),
   ]);
   S.params = par[0]?.data || {}; S.comptes = comptes; S.tiers = tiers; S.imports = imports; S.cuves = cuves; S.salaries = salaries; S.periodes = periodes;
   S.factures = await DB.sel("factures", { order: "date_facture desc" });
-  if (estCompta()) S.reglements = await DB.sel("reglements", { order: "date desc" });
+  if (estLecteur()) S.reglements = await DB.sel("reglements", { order: "date desc" });
+  S.documents = estLecteur() ? await DB.sel("documents", { order: "cree_le desc" }) : [];
   if (estGerant()) S.profiles = await DB.sel("profiles", { order: "nom" });
   S.lignesCache.clear();
 }
@@ -79,11 +82,12 @@ async function passer(e) {
 /* ---------- Structure ---------- */
 const ONGLETS = [
   ["bord", "Tableau de bord", () => true],
-  ["caisse", "Caisse", () => true],
-  ["fourn", "Fournisseurs", () => true],
-  ["carbu", "Carburant", () => true],
-  ["perso", "Personnel", () => true],
-  ["compta", "Comptabilité", estCompta],
+  ["caisse", "Caisse", estExploitation],
+  ["fourn", "Fournisseurs", estExploitation],
+  ["carbu", "Carburant", estExploitation],
+  ["perso", "Personnel", estExploitation],
+  ["compta", "Comptabilité", estLecteur],
+  ["docs", "Documents", estLecteur],
   ["param", "Paramètres", estGerant],
 ];
 function rendre() {
@@ -94,7 +98,7 @@ function rendre() {
     <div class="brand"><h1>${esc(S.params.enseigne || "Station")}</h1><span>${esc(S.params.societe || "")}</span></div>
     <div class="ctx">
       <label class="small muted">Mois <input type="month" id="mois" value="${S.mois}"></label>
-      <span class="small muted">${esc(S.nom)} · ${esc({ gerant: "Gérant", comptable: "Comptable", caissier: "Caisse" }[S.role] || S.role)}</span>
+      <span class="small muted">${esc(S.nom)} · ${esc({ gerant: "Gérant", comptable: "Comptable", caissier: "Caisse", expert: "Expert-comptable" }[S.role] || S.role)}</span>
       <button class="link" id="mdp">Mon mot de passe</button>
       <button id="deco">Se déconnecter</button>
     </div>
@@ -109,7 +113,7 @@ function rendre() {
 }
 async function vue() {
   const el = $("#vue"); el.innerHTML = `<div class="panel muted">Chargement…</div>`;
-  try { await ({ bord: vBord, caisse: vCaisse, fourn: vFourn, carbu: vCarbu, perso: vPerso, compta: vCompta, param: vParam }[S.tab])(el); }
+  try { await ({ bord: vBord, caisse: vCaisse, fourn: vFourn, carbu: vCarbu, perso: vPerso, compta: vCompta, docs: vDocuments, param: vParam }[S.tab])(el); }
   catch (e) { console.error(e); el.innerHTML = `<div class="panel"><p class="bad">${esc(e.message)}</p></div>`; }
 }
 function sousOnglets(el, cle, liste, rendu) {
@@ -148,8 +152,9 @@ async function vBord(el) {
   const aPayer = S.factures.filter((f) => f.montant_ttc - f.regle > 0);
   const echues = aPayer.filter((f) => f.echeance && f.echeance < today());
   const aValider = S.factures.filter((f) => f.statut === "a_valider" && !f.historique);
+  const aSaisir = S.factures.filter((f) => f.statut === "a_saisir");
   let res = null, treso = null, tgc = null;
-  if (estCompta()) {
+  if (estLecteur()) {
     const lm = await lignes(debutMois(m), finMois(m)); const bm = C.balance(lm, S.comptes);
     res = C.compteResultat(bm); tgc = C.declarationTgc(C.balance(lm.filter((l) => l.source !== "tgc"), S.comptes), liste);
     const lt = await lignes(null, finMois(m)); const bt = C.balance(lt, S.comptes);
@@ -159,8 +164,9 @@ async function vBord(el) {
   if (!liste.length) alertes.push(["warn", `Aucun décompte de caisse importé pour ${C.moisFr(m)}.`]);
   if (chevauchement) alertes.push(["warn", "Ce mois contient un cumul mensuel et des journées : seul le cumul est compté ici."]);
   if (r.ecart < 0) alertes.push(["bad", `Manque de caisse : ${F(-r.ecart)} sur ${C.moisFr(m)}.`]);
-  if (echues.length && estCompta()) alertes.push(["warn", `${echues.length} facture(s) échue(s) non réglée(s), pour ${F(echues.reduce((s, f) => s + f.montant_ttc - f.regle, 0))}.`]);
-  if (aValider.length && estCompta()) alertes.push(["warn", `${aValider.length} facture(s) déposée(s) à valider.`]);
+  if (echues.length && estLecteur()) alertes.push(["warn", `${echues.length} facture(s) échue(s) non réglée(s), pour ${F(echues.reduce((s, f) => s + f.montant_ttc - f.regle, 0))}.`]);
+  if (aSaisir.length && estCompta()) alertes.push(["warn", `${aSaisir.length} facture(s) déposée(s) à saisir (Fournisseurs, puis À saisir).`]);
+  if (aValider.length && estCompta()) alertes.push(["warn", `${aValider.length} facture(s) saisie(s) à comptabiliser.`]);
   const rap = C.rapprochementCarburant(liste, S.cuves).filter((x) => x.ecart != null && Math.abs(x.ecartPct) > 0.5);
   for (const x of rap) alertes.push(["bad", `Écart cuve ${x.produit} : ${fmt(x.ecart)} L (${x.ecartPct.toFixed(2)} % des ventes).`]);
 
@@ -172,7 +178,7 @@ async function vBord(el) {
     ${kpi("Chiffre d'affaires TTC", F(r.total), `Carburant ${F(r.carburant)} · Boutique ${F(r.boutique)}`)}
     ${kpi("Litres vendus", L(r.litres.GAZOLE + r.litres["SANS PLOMB"]), `Gazole ${L(r.litres.GAZOLE)} · SP ${L(r.litres["SANS PLOMB"])}`)}
     ${kpi("Écart de caisse", F(r.ecart), r.ecart < 0 ? "Manque" : r.ecart > 0 ? "Excédent" : "Caisse juste", r.ecart < 0 ? "bad" : "")}
-    ${estCompta() ? kpi("Factures à payer", F(aPayer.reduce((s, f) => s + f.montant_ttc - f.regle, 0)), `${echues.length} échue(s)`, echues.length ? "warn" : "") : ""}
+    ${estLecteur() ? kpi("Factures à payer", F(aPayer.reduce((s, f) => s + f.montant_ttc - f.regle, 0)), `${echues.length} échue(s)`, echues.length ? "warn" : "") : ""}
     ${res ? kpi("Résultat du mois", F(res.resultat), `Marge commerciale ${F(res.margeCommerciale)}`, res.resultat < 0 ? "bad" : "ok") : ""}
     ${treso ? kpi("Trésorerie", F(treso.banque + treso.caisse), `Banque ${F(treso.banque)} · Caisse et cartes ${F(treso.caisse)}`) : ""}
     ${tgc ? kpi("TGC du mois", F(tgc.net), `Collectée ${F(tgc.collectee)} · Déductible ${F(tgc.deductible)}`) : ""}
@@ -232,7 +238,9 @@ async function importerDecomptes(files) {
       if (d.societe && !/BOULOUPARIS/i.test(d.societe)) throw new Error(`${f.name} : ce décompte concerne « ${d.societe} ».`);
       const exist = S.imports.find((i) => i.date_debut === d.periode.debut && i.date_fin === d.periode.fin);
       if (exist) { if (exist.statut === "comptabilise") throw new Error(`${f.name} : la période est déjà importée et comptabilisée.`); if (!confirm(`La période ${fd(d.periode.debut)} – ${fd(d.periode.fin)} est déjà importée. La remplacer ?`)) return; await DB.del("caisse_imports", { id: exist.id }); }
-      const row = await DB.ins("caisse_imports", { date_debut: d.periode.debut, date_fin: d.periode.fin, fichier: f.name, data: d, total_ttc: d.totalDu, ecart: d.ecart });
+      let chemin = null;
+      try { chemin = await DB.upload(`caisse/${d.periode.fin.slice(0, 7)}/${d.periode.debut}_${d.periode.fin}_${uid().slice(0, 8)}.xlsx`, f); } catch (e) { toast(`${f.name} : fichier non archivé (${e.message}).`, "warn"); }
+      const row = await DB.ins("caisse_imports", { date_debut: d.periode.debut, date_fin: d.periode.fin, fichier: f.name, chemin, data: d, total_ttc: d.totalDu, ecart: d.ecart });
       S.imports = [row, ...S.imports.filter((i) => i.id !== exist?.id)].sort((a, b) => (a.date_debut < b.date_debut ? 1 : -1));
       S.mois = d.periode.fin.slice(0, 7); n++;
       if (d.alertes.length) toast(f.name + " : " + d.alertes.join(" "), "warn");
@@ -306,8 +314,9 @@ async function remiseBanque() {
    ===================================================================== */
 const reste = (f) => f.montant_ttc - f.regle;
 function vFourn(el) {
-  sousOnglets(el, "fourn", [["fac", "Factures"], ["ech", "À payer", estCompta], ["reg", "Règlements", estCompta], ["tiers", "Fournisseurs", estCompta], ["rep", "Reprise Excel", estCompta]],
-    { fac: vFactures, ech: vEcheancier, reg: vReglements, tiers: vTiers, rep: vReprise });
+  const nS = S.factures.filter((f) => f.statut === "a_saisir").length;
+  sousOnglets(el, "fourn", [["fac", "Factures"], ["saisir", `À saisir${nS ? " (" + nS + ")" : ""}`, estCompta], ["ech", "À payer", estCompta], ["reg", "Règlements", estCompta], ["tiers", "Fournisseurs", estCompta], ["rep", "Reprise Excel", estCompta]],
+    { fac: vFactures, saisir: vSaisir, ech: vEcheancier, reg: vReglements, tiers: vTiers, rep: vReprise });
 }
 function vFactures(el) {
   const f0 = S.sub.facFiltre || { q: "", statut: "", tout: false };
@@ -318,22 +327,23 @@ function vFactures(el) {
   if (f0.statut === "impaye") list = list.filter((f) => reste(f) > 0);
   if (f0.q) { const q = C.norm(f0.q); list = list.filter((f) => C.norm((tiersPar(f.tiers_id) || {}).nom).includes(q) || C.norm(f.numero).includes(q)); }
   el.innerHTML = `<div class="panel">
-    <div class="row"><h2 class="grow">Factures fournisseurs</h2><button class="primary" id="nf">Nouvelle facture</button></div>
+    <div class="row"><h2 class="grow">Factures fournisseurs</h2><label class="btn">Déposer des factures (photos ou PDF)<input type="file" id="fdep" accept="image/*,application/pdf" multiple hidden></label><button class="primary" id="nf">Nouvelle facture</button></div>
     <div class="row small">
       <input id="fq" placeholder="Fournisseur ou n°" value="${esc(f0.q)}">
-      <select id="fs"><option value="">Toutes</option><option value="a_valider" ${f0.statut === "a_valider" ? "selected" : ""}>À valider</option><option value="impaye" ${f0.statut === "impaye" ? "selected" : ""}>Non réglées</option><option value="hist" ${f0.statut === "hist" ? "selected" : ""}>Reprises hors comptabilité</option></select>
+      <select id="fs"><option value="">Toutes</option><option value="a_valider" ${f0.statut === "a_valider" ? "selected" : ""}>À comptabiliser</option><option value="impaye" ${f0.statut === "impaye" ? "selected" : ""}>Non réglées</option><option value="hist" ${f0.statut === "hist" ? "selected" : ""}>Reprises hors comptabilité</option></select>
       <label><input type="checkbox" id="ft" ${f0.tout ? "checked" : ""}> Tous les mois</label>
       <span class="grow"></span><span class="muted">${list.length} facture(s) · ${F(list.reduce((s, f) => s + f.montant_ttc, 0))}</span>
     </div>
     <div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Fournisseur</th><th>N°</th><th>Catégorie</th><th class="num">TTC</th><th class="num">Reste</th><th>Échéance</th><th>Statut</th><th></th></tr></thead><tbody>
     ${list.slice(0, 500).map((f) => `<tr class="click" data-f="${f.id}"><td>${fd(f.date_facture)}</td><td>${esc((tiersPar(f.tiers_id) || {}).nom)}</td><td>${esc(f.numero)}</td><td>${esc(f.categorie)}</td>
       <td class="num">${fmt(f.montant_ttc)}</td><td class="num">${reste(f) ? fmt(reste(f)) : chip("Réglée", "ok")}</td><td>${f.echeance ? (f.echeance < today() && reste(f) > 0 ? chip(fd(f.echeance), "bad") : fd(f.echeance)) : ""}</td>
-      <td>${f.statut === "comptabilisee" ? chip("Comptabilisée", "ok") : f.historique ? chip("Reprise", "info") : chip("À valider", "warn")}</td><td>${f.fichier ? "📎" : ""}</td></tr>`).join("") || `<tr><td colspan="9" class="muted">Aucune facture.</td></tr>`}
+      <td>${f.statut === "comptabilisee" ? chip("Comptabilisée", "ok") : f.statut === "a_saisir" ? chip("À saisir", "bad") : f.historique ? chip("Reprise", "info") : chip("À comptabiliser", "warn")}</td><td>${f.fichier ? "📎" : ""}</td></tr>`).join("") || `<tr><td colspan="9" class="muted">Aucune facture.</td></tr>`}
     </tbody></table></div>${list.length > 500 ? `<p class="small muted">500 premières lignes affichées : affinez la recherche.</p>` : ""}
   </div>`;
   const maj = () => { S.sub.facFiltre = { q: $("#fq").value, statut: $("#fs").value, tout: $("#ft").checked }; vFactures(el); };
   $("#fq").onchange = maj; $("#fs").onchange = maj; $("#ft").onchange = maj;
   $("#nf").onclick = () => formFacture(null, () => vFactures(el));
+  $("#fdep").onchange = (e) => deposerFactures([...e.target.files], () => vFourn($("#vue")));
   $$("[data-f]", el).forEach((tr) => (tr.onclick = () => formFacture(S.factures.find((f) => f.id === tr.dataset.f), () => vFactures(el))));
 }
 function optionsCategories(sel) { return Object.keys(S.params.categories || {}).sort().map((k) => `<option ${k === sel ? "selected" : ""}>${esc(k)}</option>`).join(""); }
@@ -343,7 +353,9 @@ function formFacture(f, apres) {
   const t = tiersPar(f.tiers_id);
   const verrou = f.statut === "comptabilisee";
   const vent = f.ventilation?.length ? f.ventilation : [];
-  const m = modal(neuf ? "Nouvelle facture" : `Facture ${t?.nom || ""} ${f.numero || ""}`, `
+  const enFile = f.statut === "a_saisir";
+  const m = modal(neuf ? "Nouvelle facture" : enFile ? "Saisie d'une facture déposée" : `Facture ${t?.nom || ""} ${f.numero || ""}`, `
+    <div class="${f.fichier ? "saisie" : ""}">${f.fichier ? `<div class="apercu" id="apc"><p class="muted small">Chargement de la pièce…</p></div>` : ""}<div class="saisie-form">
     <form id="ff" class="form">
       <label>Fournisseur<input name="tiers" list="dl_t" required value="${esc(t?.nom || "")}" ${verrou ? "disabled" : ""}></label>
       <datalist id="dl_t">${S.tiers.map((x) => `<option value="${esc(x.nom)}">`).join("")}</datalist>
@@ -352,7 +364,7 @@ function formFacture(f, apres) {
       <label>Échéance<input type="date" name="echeance" value="${f.echeance || ""}"></label>
       <label>Catégorie<select name="categorie" ${verrou ? "disabled" : ""}><option value=""></option>${optionsCategories(f.categorie)}</select></label>
       <label>Montant TTC (F)<input type="number" name="montant_ttc" required step="1" value="${f.montant_ttc || ""}" ${verrou ? "disabled" : ""}></label>
-      <label class="wide">Libellé<input name="libelle" value="${esc(f.libelle || "")}" ${verrou ? "disabled" : ""}></label>
+      <label class="wide">Libellé<input name="libelle" value="${esc(enFile ? "" : f.libelle || "")}" ${verrou ? "disabled" : ""}></label>
     </form>
     ${estCompta() ? `<h3>Ventilation HT / TGC</h3>
     <p class="small muted">Une ligne par taux de TGC figurant sur la facture. Sans ventilation, tout le montant va sur le compte de la catégorie, sans TGC déductible.</p>
@@ -371,7 +383,8 @@ function formFacture(f, apres) {
       <span class="grow"></span>
       <button type="button" id="fsave">Enregistrer</button>
       ${estCompta() && !verrou ? `<button type="button" class="primary" id="fpost">Enregistrer et comptabiliser</button>` : ""}
-    </div>`, { large: true });
+    </div></div></div>`, { large: true });
+  if (f.fichier) DB.lien(f.fichier).then((u) => { const pdf = /\.pdf$/i.test(f.fichier); $("#apc", m).innerHTML = pdf ? `<iframe src="${u}" title="Pièce"></iframe>` : `<a href="${u}" target="_blank" rel="noopener"><img src="${u}" alt="Pièce jointe"></a>`; }).catch((e) => { $("#apc", m).innerHTML = `<p class="bad small">${esc(e.message)}</p>`; });
   const form = $("#ff", m);
   const tb = $("#tv tbody", m);
   const ligneV = (v = { compte: "", taux: 0, ht: "", tgc: "" }) => {
@@ -403,7 +416,14 @@ function formFacture(f, apres) {
   };
   form.montant_ttc && (form.montant_ttc.oninput = tot);
   form.date_facture.onchange = () => { const tt = S.tiers.find((x) => x.nom === form.tiers.value); if (!form.echeance.value) form.echeance.value = addDays(form.date_facture.value, tt?.delai_jours ?? 30); };
-  form.tiers.onchange = () => { const tt = S.tiers.find((x) => C.cleFournisseur(x.nom) === C.cleFournisseur(form.tiers.value)); if (tt) { form.tiers.value = tt.nom; if (tt.categorie && !form.categorie.value) form.categorie.value = tt.categorie; } form.date_facture.onchange(); };
+  const autoTaux = () => {
+    if (!tb || verrou || $$("tr", tb).length) return;
+    const tt = S.tiers.find((x) => C.cleFournisseur(x.nom) === C.cleFournisseur(form.tiers.value)); const ttc = C.int(form.montant_ttc.value);
+    if (tt?.taux_tgc == null || !ttc) return;
+    const ht = Math.round(ttc / (1 + tt.taux_tgc / 100)); ligneV({ compte: compteCat(), taux: tt.taux_tgc, ht, tgc: ttc - ht }); tot();
+  };
+  form.tiers.onchange = () => { const tt = S.tiers.find((x) => C.cleFournisseur(x.nom) === C.cleFournisseur(form.tiers.value)); if (tt) { form.tiers.value = tt.nom; if (tt.categorie && !form.categorie.value) form.categorie.value = tt.categorie; } form.date_facture.onchange(); autoTaux(); };
+  if (form.montant_ttc) form.montant_ttc.onchange = autoTaux;
   let fichier = null; if ($("#pj", m)) $("#pj", m).onchange = (e) => { fichier = e.target.files[0]; $("#pjn", m).textContent = fichier ? fichier.name : ""; };
   if ($("#vp", m)) $("#vp", m).onclick = async () => { const u = await action(() => DB.lien(f.fichier)); if (u) window.open(u, "_blank"); };
 
@@ -420,7 +440,9 @@ function formFacture(f, apres) {
     const row = verrou ? { echeance: form.echeance.value || null } : {
       tiers_id: tt.id, numero: form.numero.value.trim() || null, date_facture: form.date_facture.value, echeance: form.echeance.value || null,
       categorie: form.categorie.value || null, libelle: form.libelle.value.trim() || null, montant_ttc: C.int(form.montant_ttc.value), ventilation: lireV(), fichier: chemin,
+      ...(enFile ? { statut: "a_valider" } : {}),
     };
+    if (!verrou && !row.montant_ttc) throw new Error("Montant TTC manquant.");
     if (neuf) {
       const dbl = S.factures.find((x) => x.tiers_id === tt.id && x.numero && x.numero === row.numero);
       if (dbl && !confirm(`La facture ${row.numero} de ${tt.nom} existe déjà. Enregistrer quand même ?`)) return null;
@@ -436,6 +458,32 @@ function formFacture(f, apres) {
   }, "Facture comptabilisée");
   if ($("#fdel", m)) $("#fdel", m).onclick = () => { if (confirm("Supprimer cette facture ?")) action(async () => { await DB.del("factures", { id: f.id }); S.factures = S.factures.filter((x) => x.id !== f.id); m.remove(); apres(); }, "Facture supprimée"); };
   if ($("#fdec", m)) $("#fdec", m).onclick = () => { if (confirm("Supprimer l'écriture comptable de cette facture ? La facture repassera « à valider ».")) action(async () => { await DB.rpc("supprimer_ecriture", { p_id: f.ecriture_id }); invalider(); f.statut = "a_valider"; f.ecriture_id = null; m.remove(); apres(); }, "Écriture annulée"); };
+}
+async function deposerFactures(files, apres) {
+  let n = 0;
+  for (const f of files) await action(async () => {
+    if (f.size > 20e6) throw new Error(`${f.name} : fichier trop lourd (20 Mo maximum).`);
+    const chemin = await DB.upload(`factures/${today().slice(0, 7)}/${uid()}-${f.name.replace(/[^\w.\-]/g, "_")}`, f);
+    const row = await DB.ins("factures", { statut: "a_saisir", date_facture: today(), montant_ttc: 0, fichier: chemin, libelle: f.name });
+    S.factures.unshift(row); n++;
+  });
+  if (n) toast(`${n} facture(s) déposée(s)${estCompta() ? "" : " : le comptable les saisira"}.`);
+  if (apres) apres();
+}
+function vSaisir(el) {
+  const file = () => S.factures.filter((f) => f.statut === "a_saisir").sort((a, b) => (a.cree_le < b.cree_le ? -1 : 1));
+  const list = file();
+  el.innerHTML = `<div class="panel"><div class="row"><h2 class="grow">Factures déposées à saisir · ${list.length}</h2>
+    <label class="btn">Déposer des factures<input type="file" id="sdep" accept="image/*,application/pdf" multiple hidden></label>${list.length ? `<button class="primary" id="sgo">Saisir la première</button>` : ""}</div>
+    <p class="small muted">Chaque facture s'ouvre avec sa pièce à côté du formulaire. Après « Enregistrer et comptabiliser », la suivante s'ouvre toute seule.</p>
+    <div class="tbl-wrap"><table><thead><tr><th>Déposée le</th><th>Fichier</th><th></th></tr></thead><tbody>
+    ${list.map((f, i) => `<tr class="click" data-i="${i}"><td>${f.cree_le ? fd(f.cree_le.slice(0, 10)) + " " + f.cree_le.slice(11, 16) : ""}</td><td>${esc(f.libelle || f.fichier)}</td><td><button class="link danger" data-x="${f.id}">Supprimer</button></td></tr>`).join("") || `<tr><td colspan="3" class="muted">Rien à saisir.</td></tr>`}
+    </tbody></table></div></div>`;
+  const ouvrir = (f) => formFacture(f, () => { const r = file(); if (r.length) ouvrir(r[0]); else vFourn($("#vue")); });
+  if ($("#sgo")) $("#sgo").onclick = () => ouvrir(list[0]);
+  $$("[data-i]", el).forEach((tr) => (tr.onclick = (e) => { if (!e.target.dataset.x) ouvrir(list[+tr.dataset.i]); }));
+  $$("[data-x]", el).forEach((b) => (b.onclick = () => { if (confirm("Supprimer ce dépôt ?")) action(async () => { await DB.del("factures", { id: b.dataset.x }); S.factures = S.factures.filter((f) => f.id !== b.dataset.x); vFourn($("#vue")); }, "Dépôt supprimé"); }));
+  $("#sdep").onchange = (e) => deposerFactures([...e.target.files], () => vFourn($("#vue")));
 }
 async function comptabiliserFacture(f) {
   const t = tiersPar(f.tiers_id);
@@ -486,8 +534,8 @@ function vReglements(el) {
 }
 function vTiers(el) {
   el.innerHTML = `<div class="panel"><div class="row"><h2 class="grow">Fournisseurs et organismes</h2><button class="primary" id="nt">Nouveau</button></div>
-  <div class="tbl-wrap"><table><thead><tr><th>Nom</th><th>Type</th><th>Compte</th><th>Catégorie</th><th class="num">Délai</th><th class="num">Reste dû</th></tr></thead><tbody>
-  ${S.tiers.map((t) => `<tr class="click" data-t="${t.id}"><td>${esc(t.nom)}</td><td>${esc(t.type)}</td><td class="mono">${esc(t.compte)}</td><td>${esc(t.categorie)}</td><td class="num">${t.delai_jours ?? ""} j</td><td class="num">${fmt(S.factures.filter((f) => f.tiers_id === t.id).reduce((s, f) => s + reste(f), 0))}</td></tr>`).join("")}
+  <div class="tbl-wrap"><table><thead><tr><th>Nom</th><th>Type</th><th>Compte</th><th>Catégorie</th><th class="num">TGC</th><th class="num">Délai</th><th class="num">Reste dû</th></tr></thead><tbody>
+  ${S.tiers.map((t) => `<tr class="click" data-t="${t.id}"><td>${esc(t.nom)}</td><td>${esc(t.type)}</td><td class="mono">${esc(t.compte)}</td><td>${esc(t.categorie)}</td><td class="num">${t.taux_tgc == null ? "" : t.taux_tgc + " %"}</td><td class="num">${t.delai_jours ?? ""} j</td><td class="num">${fmt(S.factures.filter((f) => f.tiers_id === t.id).reduce((s, f) => s + reste(f), 0))}</td></tr>`).join("")}
   </tbody></table></div><p class="small muted">Pour la CAFAT, le service de la Recette ou une caisse de retraite, mettez le type « organisme » et le compte de dette correspondant (431000, 445510, 437000) : leurs règlements soldent alors la bonne dette.</p></div>`;
   const ouvrir = (t) => {
     const n = !t; t = t || { type: "fournisseur", compte: "401000", delai_jours: 30 };
@@ -497,11 +545,12 @@ function vTiers(el) {
       <label>Compte<input name="compte" list="dl_c4" class="mono" value="${esc(t.compte)}"></label>${datalistComptes("dl_c4", (x) => x.startsWith("4"))}
       <label>Catégorie par défaut<select name="categorie"><option value=""></option>${optionsCategories(t.categorie)}</select></label>
       <label>Délai de paiement (jours)<input type="number" name="delai_jours" value="${t.delai_jours ?? 30}"></label>
+      <label>TGC habituelle sur ses factures<select name="taux_tgc"><option value="">Variable (à ventiler)</option>${C.TAUX.map((x) => `<option value="${x}" ${t.taux_tgc === x ? "selected" : ""}>${x} %</option>`).join("")}</select></label>
       <label class="wide">Notes<input name="notes" value="${esc(t.notes || "")}"></label></form>
       <div class="row end"><button class="primary" id="tok">Enregistrer</button></div>`);
     $("#tok", m).onclick = () => action(async () => {
       const fm = $("#ft", m); if (!fm.reportValidity()) return;
-      const row = { nom: fm.nom.value.trim().toUpperCase(), type: fm.type.value, compte: fm.compte.value.trim(), categorie: fm.categorie.value || null, delai_jours: +fm.delai_jours.value || 0, notes: fm.notes.value || null };
+      const row = { nom: fm.nom.value.trim().toUpperCase(), type: fm.type.value, compte: fm.compte.value.trim(), categorie: fm.categorie.value || null, delai_jours: +fm.delai_jours.value || 0, notes: fm.notes.value || null, taux_tgc: fm.taux_tgc.value === "" ? null : +fm.taux_tgc.value };
       if (n) S.tiers.push(await DB.ins("tiers", row)); else { const r = await DB.upd("tiers", { id: t.id }, row); S.tiers = S.tiers.map((x) => (x.id === r.id ? r : x)); }
       S.tiers.sort((a, b) => a.nom.localeCompare(b.nom)); m.remove(); vTiers(el);
     }, "Enregistré");
@@ -742,7 +791,7 @@ async function vPaie(el) {
    COMPTABILITÉ
    ===================================================================== */
 function vCompta(el) {
-  sousOnglets(el, "compta", [["ecr", "Écritures"], ["saisie", "Saisie"], ["gl", "Grand livre"], ["bal", "Balance"], ["res", "Résultat"], ["bil", "Bilan"], ["tgc", "TGC"], ["clo", "Clôture"], ["exp", "Export"], ["pc", "Plan comptable"]],
+  sousOnglets(el, "compta", [["ecr", "Écritures"], ["saisie", "Saisie", estCompta], ["gl", "Grand livre"], ["bal", "Balance"], ["res", "Résultat"], ["bil", "Bilan"], ["tgc", "TGC"], ["clo", "Clôture", estCompta], ["exp", "Export"], ["pc", "Plan comptable", estCompta]],
     { ecr: vEcritures, saisie: vSaisie, gl: vGrandLivre, bal: vBalance, res: vResultat, bil: vBilan, tgc: vTgc, clo: vCloture, exp: vExport, pc: vPlan });
 }
 function choixPeriode(cle) {
@@ -760,7 +809,7 @@ async function vEcritures(el) {
     ${[...parE.values()].map((g) => { const e = g[0]; const D = g.reduce((s, l) => s + +l.debit, 0);
       return `<details class="grp"><summary><span class="mono">${e.journal}</span> ${fd(e.date)} · ${esc(e.ecriture_libelle)} <span class="small muted">${esc(e.piece || "")}</span> <span class="num">${fmt(D)}</span></summary>
       <table>${g.map((l) => `<tr><td class="mono">${l.compte}</td><td>${esc(l.libelle)}</td><td class="num">${+l.debit ? fmt(l.debit) : ""}</td><td class="num">${+l.credit ? fmt(l.credit) : ""}</td></tr>`).join("")}</table>
-      ${clos ? "" : `<div class="row end"><button class="link danger" data-del="${e.ecriture_id}">Supprimer cette écriture</button></div>`}</details>`; }).join("") || `<p class="muted">Aucune écriture.</p>`}</div>`;
+      ${clos || !estCompta() ? "" : `<div class="row end"><button class="link danger" data-del="${e.ecriture_id}">Supprimer cette écriture</button></div>`}</details>`; }).join("") || `<p class="muted">Aucune écriture.</p>`}</div>`;
   $("#jr").onchange = (e) => { S.sub.jrn = e.target.value; vEcritures(el); };
   $$("[data-del]", el).forEach((b) => (b.onclick = () => { if (confirm("Supprimer définitivement cette écriture ? La pièce d'origine (facture, décompte) redeviendra à comptabiliser.")) action(async () => { await DB.rpc("supprimer_ecriture", { p_id: b.dataset.del }); invalider(); await chargerTout(); vEcritures(el); }, "Écriture supprimée"); }));
 }
@@ -849,7 +898,7 @@ async function vTgc(el) {
   <tr class="total"><td colspan="2">Total</td><td class="num">${fmt(d.collectee)}</td><td class="num">${fmt(d.deductible)}</td></tr>
   </tbody><tfoot><tr class="total"><td colspan="2">${d.net >= 0 ? "TGC à payer" : "Crédit de TGC"}</td><td class="num" colspan="2">${F(Math.abs(d.net))}</td></tr></tfoot></table></div>
   <p class="small muted">Collectée et déductible viennent des écritures du mois (comptes 4457x et 4456x). Vérifiez que toutes les factures du mois sont comptabilisées avec leur ventilation avant de déclarer.</p>
-  <div class="row end">${deja ? chip("Écriture de liquidation passée", "ok") : `<button class="primary" id="tliq" ${d.collectee || d.deductible ? "" : "disabled"}>Passer l'écriture de liquidation</button>`}</div></div>`;
+  <div class="row end">${deja ? chip("Écriture de liquidation passée", "ok") : !estCompta() ? "" : `<button class="primary" id="tliq" ${d.collectee || d.deductible ? "" : "disabled"}>Passer l'écriture de liquidation</button>`}</div></div>`;
   if ($("#tliq")) $("#tliq").onclick = () => action(async () => { await passer(C.ecritureLiquidationTgc(m, d)); vTgc(el); }, "Liquidation passée : la dette est au 445510");
 }
 function vCloture(el) {
@@ -885,6 +934,57 @@ function vPlan(el) {
 function telecharger(nom, txt) {
   const b = new Blob(["﻿" + txt], { type: "text/plain;charset=utf-8" }); const a = document.createElement("a");
   a.href = URL.createObjectURL(b); a.download = nom; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+/* =====================================================================
+   DOCUMENTS (pièces pour l'expert-comptable)
+   ===================================================================== */
+const TYPES_DOCS = ["Relevé bancaire", "Déclaration TGC", "CAFAT et organismes", "Paie", "Contrat ou bail", "Impôts", "Assurance", "Autre"];
+function nomFichier(s) { return C.norm(s).replace(/[^A-Z0-9]+/g, "_").replace(/^_|_$/g, "").slice(0, 40) || "PIECE"; }
+function vDocuments(el) {
+  const m = S.mois;
+  const fac = S.factures.filter((f) => f.statut !== "a_saisir" && f.date_facture.slice(0, 7) === m).sort((a, b) => a.date_facture.localeCompare(b.date_facture));
+  const sansPiece = fac.filter((f) => !f.fichier && !f.historique);
+  const cai = S.imports.filter((i) => i.date_fin.slice(0, 7) === m).sort((a, b) => a.date_debut.localeCompare(b.date_debut));
+  const docs = (S.documents || []).filter((d) => d.mois === m);
+  const lien = (p, t) => (p ? `<button class="link" data-l="${esc(p)}">${esc(t || "Ouvrir")}</button>` : `<span class="muted">—</span>`);
+  el.innerHTML = `<div class="panel"><div class="row"><h2 class="grow">Pièces de ${C.moisFr(m)}</h2><button class="primary" id="dzip">Tout télécharger (ZIP)</button></div>
+    <p class="small muted">Le ZIP contient les factures, les décomptes de caisse EURODATA, les autres documents du mois et un récapitulatif des factures (CSV)${estLecteur() ? ", avec les écritures du mois" : ""}.</p>
+    ${sansPiece.length ? `<ul class="alerts"><li>${sansPiece.length} facture(s) du mois sans pièce jointe : ${sansPiece.slice(0, 8).map((f) => esc((tiersPar(f.tiers_id) || {}).nom + " " + (f.numero || ""))).join(", ")}${sansPiece.length > 8 ? "…" : ""}</li></ul>` : ""}
+    <h3>Factures fournisseurs · ${fac.length}</h3><div class="tbl-wrap"><table><thead><tr><th>Date</th><th>Fournisseur</th><th>N°</th><th class="num">TTC</th><th>Statut</th><th>Pièce</th></tr></thead><tbody>
+    ${fac.map((f) => `<tr><td>${fd(f.date_facture)}</td><td>${esc((tiersPar(f.tiers_id) || {}).nom)}</td><td>${esc(f.numero)}</td><td class="num">${fmt(f.montant_ttc)}</td><td>${f.statut === "comptabilisee" ? chip("Comptabilisée", "ok") : f.historique ? chip("Reprise", "info") : chip("À comptabiliser", "warn")}</td><td>${lien(f.fichier, "Voir")}</td></tr>`).join("") || `<tr><td colspan="6" class="muted">Aucune facture.</td></tr>`}</tbody></table></div>
+    <h3>Décomptes de caisse · ${cai.length}</h3><div class="tbl-wrap"><table><tbody>
+    ${cai.map((i) => `<tr><td>${i.date_debut === i.date_fin ? fd(i.date_debut) : fd(i.date_debut) + " → " + fd(i.date_fin)}</td><td class="num">${F(i.total_ttc)}</td><td>${i.statut === "comptabilise" ? chip("Comptabilisé", "ok") : chip("Brouillon", "warn")}</td><td>${lien(i.chemin, "Fichier EURODATA")}</td></tr>`).join("") || `<tr><td class="muted">Aucun décompte.</td></tr>`}</tbody></table></div>
+    <h3>Autres documents · ${docs.length}</h3>
+    ${estCompta() ? `<div class="row"><select id="dt">${TYPES_DOCS.map((t) => `<option>${t}</option>`).join("")}</select><input id="dl" placeholder="Libellé (facultatif)"><label class="btn">Ajouter des fichiers<input type="file" id="df" multiple hidden></label></div>` : ""}
+    <div class="tbl-wrap"><table><tbody>${docs.map((d) => `<tr><td>${esc(d.type)}</td><td>${esc(d.libelle || "")}</td><td>${lien(d.fichier, "Ouvrir")}</td><td>${estCompta() ? `<button class="link danger" data-dx="${d.id}">Retirer</button>` : ""}</td></tr>`).join("") || `<tr><td class="muted">Aucun document. Déposez ici les relevés bancaires, déclarations et contrats du mois.</td></tr>`}</tbody></table></div></div>`;
+  $$("[data-l]", el).forEach((b) => (b.onclick = async () => { const u = await action(() => DB.lien(b.dataset.l)); if (u) window.open(u, "_blank", "noopener"); }));
+  $$("[data-dx]", el).forEach((b) => (b.onclick = () => { if (confirm("Retirer ce document ?")) action(async () => { await DB.del("documents", { id: b.dataset.dx }); S.documents = S.documents.filter((d) => d.id !== b.dataset.dx); vDocuments(el); }, "Document retiré"); }));
+  if ($("#df")) $("#df").onchange = async (e) => {
+    let n = 0;
+    for (const f of e.target.files) await action(async () => {
+      const chemin = await DB.upload(`documents/${m}/${uid()}-${f.name.replace(/[^\w.\-]/g, "_")}`, f);
+      S.documents.unshift(await DB.ins("documents", { mois: m, type: $("#dt").value, libelle: $("#dl").value.trim() || f.name, fichier: chemin })); n++;
+    });
+    if (n) toast(`${n} document(s) ajouté(s)`); vDocuments(el);
+  };
+  $("#dzip").onclick = () => action(async () => {
+    if (!window.JSZip) throw new Error("Module ZIP indisponible : rechargez la page.");
+    const b = $("#dzip"); b.disabled = true; const zip = new JSZip(); let n = 0, ko = 0;
+    const ajouter = async (dossier, chemin, base) => {
+      try { const u = await DB.lien(chemin); const r = await fetch(u); if (!r.ok) throw new Error(r.status); const ext = (chemin.match(/\.[a-z0-9]+$/i) || [""])[0]; zip.file(`${dossier}/${base}${ext}`, await r.blob()); n++; b.textContent = `Préparation… ${n}`; }
+      catch { ko++; }
+    };
+    const vus = {}; const unique = (s) => { vus[s] = (vus[s] || 0) + 1; return vus[s] > 1 ? `${s}_${vus[s]}` : s; };
+    for (const f of fac) if (f.fichier) await ajouter("Factures", f.fichier, unique(`${f.date_facture}_${nomFichier((tiersPar(f.tiers_id) || {}).nom)}_${nomFichier(f.numero || "SANS_NUMERO")}`));
+    for (const i of cai) if (i.chemin) await ajouter("Caisse", i.chemin, unique(`Decompte_${i.date_debut}_${i.date_fin}`));
+    for (const d of docs) await ajouter("Documents", d.fichier, unique(`${nomFichier(d.type)}_${nomFichier(d.libelle || "")}`));
+    zip.file(`Factures_${m}.csv`, "\ufeffDate;Fournisseur;N°;Catégorie;TTC;Réglé;Statut;Pièce\n" + fac.map((f) => [fd(f.date_facture), (tiersPar(f.tiers_id) || {}).nom, f.numero || "", f.categorie || "", f.montant_ttc, f.regle, f.statut, f.fichier ? "oui" : "non"].map((x) => String(x ?? "").replace(/;/g, ",")).join(";")).join("\n"));
+    if (estLecteur()) { const ls = await lignes(debutMois(m), finMois(m)); zip.file(`Ecritures_${m}.csv`, "\ufeffDate;Journal;Pièce;Compte;Libellé;Débit;Crédit\n" + ls.map((l) => [fd(l.date), l.journal, l.piece || "", l.compte, (l.libelle || "").replace(/;/g, ","), l.debit, l.credit].join(";")).join("\n")); }
+    const blob = await zip.generateAsync({ type: "blob" }); const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `Station_Boulouparis_pieces_${m}.zip`; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+    b.disabled = false; b.textContent = "Tout télécharger (ZIP)";
+    toast(`${n} pièce(s) dans le ZIP${ko ? `, ${ko} introuvable(s)` : ""}.`, ko ? "warn" : "ok");
+  });
 }
 
 /* =====================================================================
@@ -933,14 +1033,14 @@ function vMapping(el) {
   }, "Enregistré");
 }
 function vUsers(el) {
-  const R = { gerant: "Gérant", comptable: "Comptable", caissier: "Caisse", desactive: "Désactivé" };
+  const R = { gerant: "Gérant", comptable: "Comptable", caissier: "Caisse", expert: "Expert-comptable", desactive: "Désactivé" };
   el.innerHTML = `<div class="panel"><div class="row"><h2 class="grow">Utilisateurs</h2><button class="primary" id="nu">Créer un compte</button></div>
   <table><thead><tr><th>Nom</th><th>E-mail</th><th>Rôle</th></tr></thead><tbody>${S.profiles.map((p) => `<tr><td>${esc(p.nom)}</td><td>${esc(p.email)}</td><td>${p.id === S.user.id ? R[p.role] : `<select data-u="${p.id}">${Object.entries(R).map(([k, n]) => `<option value="${k}" ${k === p.role ? "selected" : ""}>${n}</option>`).join("")}</select>`}</td></tr>`).join("")}</tbody></table>
-  <ul class="small muted"><li><b>Comptable</b> : comptabilité, fournisseurs, caisse, carburant, planning. Ne voit ni les fiches salariés ni la paie.</li><li><b>Caisse</b> : importe les décomptes, dépose les factures en photo, saisit les jauges, consulte le planning. Ne voit pas la comptabilité.</li><li><b>Désactivé</b> : plus aucun accès, à appliquer le jour d'un départ.</li></ul></div>`;
+  <ul class="small muted"><li><b>Comptable</b> : comptabilité, fournisseurs, caisse, carburant, planning. Ne voit ni les fiches salariés ni la paie.</li><li><b>Caisse</b> : importe les décomptes, dépose les factures en photo, saisit les jauges, consulte le planning. Ne voit pas la comptabilité.</li><li><b>Expert-comptable</b> : consulte la comptabilité (écritures, grand livre, balance, résultat, bilan, TGC), exporte le FEC et télécharge toutes les pièces dans Documents. Ne peut rien modifier, et ne voit ni les salariés ni le planning.</li><li><b>Désactivé</b> : plus aucun accès, à appliquer le jour d'un départ.</li></ul></div>`;
   $$("[data-u]", el).forEach((s) => (s.onchange = () => action(async () => { await DB.upd("profiles", { id: s.dataset.u }, { role: s.value }); S.profiles = await DB.sel("profiles", { order: "nom" }); }, "Rôle modifié")));
   $("#nu").onclick = () => {
     const m = modal("Créer un compte", `<form class="form" id="fu"><label>Nom<input name="nom" required></label><label>E-mail<input type="email" name="email" required></label>
-      <label>Rôle<select name="role"><option value="caissier">Caisse</option><option value="comptable">Comptable</option><option value="gerant">Gérant</option></select></label></form><div id="ur"></div><div class="row end"><button class="primary" id="uok">Créer</button></div>`);
+      <label>Rôle<select name="role"><option value="caissier">Caisse</option><option value="comptable">Comptable</option><option value="expert">Expert-comptable</option><option value="gerant">Gérant</option></select></label></form><div id="ur"></div><div class="row end"><button class="primary" id="uok">Créer</button></div>`);
     $("#uok", m).onclick = () => action(async () => {
       const f = $("#fu", m); if (!f.reportValidity()) return;
       const pwd = motDePasse(); const email = f.email.value.trim().toLowerCase();
@@ -990,7 +1090,7 @@ async function demarrer() {
   if (!S.user) return ecranConnexion();
   const prof = (await DB.sel("profiles", { eq: { id: S.user.id } }))[0];
   S.role = prof?.role || "aucun"; S.nom = prof?.nom || S.user.email;
-  if (!["gerant", "comptable", "caissier"].includes(S.role)) {
+  if (!["gerant", "comptable", "caissier", "expert"].includes(S.role)) {
     $("#app").innerHTML = `<div class="login panel"><h1>Accès en attente</h1><p>Votre compte (${esc(S.user.email)}) n'a pas encore de rôle. Demandez au gérant de vous en attribuer un.</p><button id="deco">Se déconnecter</button></div>`;
     $("#deco").onclick = async () => { await DB.client.auth.signOut(); location.reload(); }; return;
   }
